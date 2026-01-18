@@ -20,9 +20,12 @@ A minimal deployment wrapper for [Maestro](https://github.com/nickcottrell/maest
 ```
 cuesync/
 ├── config.yaml        # Schedule configuration (EDIT THIS)
+├── hooks              # Simple management commands
 ├── setup.sh           # One-time server setup
 ├── sync.sh            # Auto-pull and update cron
 ├── .env.example       # Secrets template
+├── logs/              # Execution logs
+│   └── archive/       # Archived logs (7+ days)
 └── maestro/           # Git submodule → dev repo
     └── (pulled automatically)
 ```
@@ -116,13 +119,20 @@ cd cuesync
 # Force sync now
 ./sync.sh
 
+# Check what's scheduled next
+./hooks list-next
+
+# View recent log for a cuesheet
+./hooks view-log morning-workflow
+
+# Archive old logs (7+ days)
+./hooks archive-logs
+
+# Check overall status
+./hooks status
+
 # Check cron jobs
 crontab -l
-
-# Check logs
-tail -f logs/morning-workflow.log
-tail -f logs/release-train.log
-tail -f logs/sync.log
 
 # Test cuesheet manually
 cd maestro
@@ -163,6 +173,17 @@ Runs every 30 minutes (via cron, adjustable in config.yaml):
 
 **You rarely need to run this manually.**
 
+### `hooks` - Management Commands
+
+Simple commands for deployment node:
+
+- `./hooks list-next` - Show next scheduled executions
+- `./hooks view-log <name>` - View recent log for a cuesheet
+- `./hooks archive-logs` - Archive logs older than 7 days
+- `./hooks status` - Show overall deployment status
+
+**Dumb and simple. No magic.**
+
 ### `.env` - Secrets
 
 API keys and credentials:
@@ -172,6 +193,28 @@ API keys and credentials:
 - Preferences
 
 **Gitignored. Never commit.**
+
+---
+
+## Log Management
+
+**Execution Logs:**
+- All cuesheet executions log to `logs/<cuesheet-name>.log`
+- Sync operations log to `logs/sync.log`
+- Logs grow indefinitely until archived
+
+**Archive Strategy:**
+- Run `./hooks archive-logs` to archive logs older than 7 days
+- Archives saved to `logs/archive/logs-<timestamp>.tar.gz`
+- Original logs deleted after archiving
+- Recommend running archive weekly or monthly
+
+**View Logs:**
+```bash
+./hooks view-log morning-workflow  # Last 50 lines
+./hooks status                      # Overall status + recent files
+tail -f logs/morning-workflow.log  # Live tail
+```
 
 ---
 
@@ -197,12 +240,13 @@ API keys and credentials:
 
 ## Why This is Minimal
 
-- **3 files** (config.yaml, setup.sh, sync.sh)
+- **4 core files** (config.yaml, hooks, setup.sh, sync.sh)
 - **1 server** ($5/month)
 - **Flat file schedule** (no complex config)
 - **Git pull** (no deployment pipeline)
 - **Cron** (no Lambda, no EventBridge)
-- **SSH + tail** (simple debugging)
+- **Simple hooks** (4 commands, no magic)
+- **Dumb logging** (append to files, archive when old)
 
 ---
 

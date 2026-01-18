@@ -1,0 +1,150 @@
+#!/bin/bash
+# Cuesync Hooks - Simple commands for deployment node management
+
+set -e
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
+
+LOGS_DIR="$SCRIPT_DIR/logs"
+ARCHIVE_DIR="$SCRIPT_DIR/logs/archive"
+
+# Ensure directories exist
+mkdir -p "$LOGS_DIR"
+mkdir -p "$ARCHIVE_DIR"
+
+case "$1" in
+  list-next)
+    echo "📋 Next Scheduled Executions"
+    echo "============================"
+    echo ""
+
+    # Parse config.yaml for schedule info
+    python3 << 'PYTHON'
+import yaml
+from pathlib import Path
+from datetime import datetime
+
+config_path = Path('config.yaml')
+with open(config_path) as f:
+    config = yaml.safe_load(f)
+
+print(f"Sync Interval: {config.get('sync_interval', 'Not set')}")
+print("")
+
+print("Cuesheets:")
+for cue in config.get('cuesheets', []):
+    status = "✅ enabled" if cue.get('enabled', True) else "❌ disabled"
+    desc = cue.get('description', '')
+    print(f"  {cue['name']}")
+    print(f"    Schedule: {cue['schedule']}")
+    print(f"    Status: {status}")
+    if desc:
+        print(f"    Description: {desc}")
+    print("")
+PYTHON
+    ;;
+
+  view-log)
+    if [ -z "$2" ]; then
+      echo "Usage: ./hooks view-log <cuesheet-name>"
+      echo ""
+      echo "Available logs:"
+      ls -1 "$LOGS_DIR"/*.log 2>/dev/null | xargs -n1 basename || echo "  (no logs yet)"
+      exit 1
+    fi
+
+    LOG_FILE="$LOGS_DIR/$2.log"
+    if [ ! -f "$LOG_FILE" ]; then
+      echo "❌ Log not found: $LOG_FILE"
+      exit 1
+    fi
+
+    echo "📄 Viewing log: $2.log"
+    echo "============================"
+    tail -n 50 "$LOG_FILE"
+    ;;
+
+  archive-logs)
+    echo "📦 Archiving old logs..."
+    echo ""
+
+    # Archive logs older than 7 days
+    ARCHIVE_DATE=$(date +%Y%m%d-%H%M%S)
+    ARCHIVE_FILE="$ARCHIVE_DIR/logs-$ARCHIVE_DATE.tar.gz"
+
+    # Find logs older than 7 days
+    OLD_LOGS=$(find "$LOGS_DIR" -name "*.log" -type f -mtime +7 2>/dev/null || true)
+
+    if [ -z "$OLD_LOGS" ]; then
+      echo "✅ No logs older than 7 days to archive"
+      exit 0
+    fi
+
+    # Create archive
+    echo "$OLD_LOGS" | tar -czf "$ARCHIVE_FILE" -T -
+
+    # Remove archived logs
+    echo "$OLD_LOGS" | xargs rm -f
+
+    echo "✅ Archived to: logs/archive/logs-$ARCHIVE_DATE.tar.gz"
+    echo ""
+    echo "Archived logs:"
+    echo "$OLD_LOGS" | sed 's/^/  /'
+    ;;
+
+  status)
+    echo "🔄 Cuesync Status"
+    echo "============================"
+    echo ""
+
+    # Last sync time
+    if [ -f "$LOGS_DIR/sync.log" ]; then
+      LAST_SYNC=$(tail -n 1 "$LOGS_DIR/sync.log" 2>/dev/null || echo "Never")
+      echo "Last Sync: $LAST_SYNC"
+    else
+      echo "Last Sync: Never"
+    fi
+    echo ""
+
+    # Active cron jobs
+    echo "Active Cron Jobs:"
+    crontab -l 2>/dev/null | grep -v "^#" | grep -v "^$" || echo "  (none)"
+    echo ""
+
+    # Recent log activity
+    echo "Recent Log Files:"
+    if ls -lt "$LOGS_DIR"/*.log 2>/dev/null | head -n 5; then
+      :
+    else
+      echo "  (no logs yet)"
+    fi
+    ;;
+
+  help|--help|-h|"")
+    echo "Cuesync Hooks - Deployment Node Management"
+    echo "==========================================="
+    echo ""
+    echo "Usage: ./hooks <command> [args]"
+    echo ""
+    echo "Commands:"
+    echo "  list-next          Show next scheduled executions"
+    echo "  view-log <name>    View recent log for a cuesheet"
+    echo "  archive-logs       Archive logs older than 7 days"
+    echo "  status             Show overall deployment status"
+    echo "  help               Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  ./hooks list-next"
+    echo "  ./hooks view-log morning-workflow"
+    echo "  ./hooks archive-logs"
+    echo "  ./hooks status"
+    ;;
+
+  *)
+    echo "❌ Unknown command: $1"
+    echo ""
+    echo "Run './hooks help' for available commands"
+    exit 1
+    ;;
+esac
