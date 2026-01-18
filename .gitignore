@@ -1,0 +1,12 @@
+# Secrets
+.env
+
+# Logs
+logs/
+
+# Maestro submodule artifacts (tracked in maestro repo)
+maestro/artifacts/
+maestro/logs/
+maestro/.venv/
+maestro/__pycache__/
+maestro/**/__pycache__/
