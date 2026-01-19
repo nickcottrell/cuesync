@@ -1,0 +1,31 @@
+# CueSync Configuration - Example Template
+# Copy this to config.yaml and customize for your deployment
+# This relay is disposable. If compromised, destroy and recreate.
+
+cuesync_id: cuesync-prod-001  # Change to unique ID
+expires_at: "2026-02-19T00:00:00Z"  # Set expiration (use ./hooks keygen or rotate.sh)
+
+# Authentication
+auth:
+  # SHA-256 hash of upstream signing key
+  # Generate with: ./scripts/generate_key_hash.py "your-key"
+  # Or use: ./hooks keygen
+  upstream_key_hash: "YOUR_KEY_HASH_HERE"
+
+# Tool Mapping (tool name → webhook URL)
+# Webhook URLs are secret - never exposed in cues
+# Replace with your actual Zapier/Make/webhook URLs
+tools:
+  tool1: https://hooks.zapier.com/hooks/catch/YOUR_WEBHOOK_1
+  tool2: https://hooks.zapier.com/hooks/catch/YOUR_WEBHOOK_2
+  tool3: https://hooks.zapier.com/hooks/catch/YOUR_WEBHOOK_3
+
+# Storage
+db_path: "cuesync.db"  # SQLite database for cue persistence
+
+# Execution
+worker_interval_seconds: 60  # how often to check for pending cues (1 minute)
+max_retry_attempts: 3  # max retries before marking as failed
+
+# Optional
+renewal_window_seconds: 86400  # can renew 24h before expiration

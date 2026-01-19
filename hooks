@@ -1,461 +1,345 @@
 #!/bin/bash
-# Cuesync Deployment Hooks
-# Simplified deployment pattern for cron-based execution node
+# CueSync Hooks - Standard Commands with Logging
+# Provides clean interface for all CueSync operations
 
 set -e
 
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd "$SCRIPT_DIR"
+# Configuration
+HOOKS_LOG_DIR="logs"
+HOOKS_LOG_FILE="$HOOKS_LOG_DIR/hooks.log"
+STATIC_IP=${STATIC_IP:-"3.138.41.20"}
+INSTANCE_NAME=${INSTANCE_NAME:-"cuesync-node"}
 
-SCHEDULE_FILE="schedule.yaml"
-DEPLOY_CONFIG="deploy-config.yaml"
-LOGS_DIR="$SCRIPT_DIR/logs"
-ARCHIVE_DIR="$SCRIPT_DIR/logs/archive"
+# Create logs directory
+mkdir -p "$HOOKS_LOG_DIR"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-# ============================================================
-# UTILITY FUNCTIONS
-# ============================================================
-
-print_header() {
-  echo ""
-  echo "═══════════════════════════════════════════════════════════"
-  echo "🔄 $1"
-  echo "═══════════════════════════════════════════════════════════"
-  echo ""
+# Logging function
+log_command() {
+    local command=$1
+    local status=$2
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    echo "[$timestamp] $command | status=$status" >> "$HOOKS_LOG_FILE"
 }
 
-print_step() {
-  echo -e "${BLUE}▶${NC} $1"
+# Display usage
+usage() {
+    cat <<EOF
+CueSync Hooks - Standard Commands
+
+Usage: ./hooks <command> [options]
+
+DEPLOYMENT:
+  deploy              Deploy CueSync to Lightsail instance
+  status              Check CueSync server status
+  health              Check health endpoint
+  stats               Show execution statistics
+  logs [lines]        View server logs (default: 50 lines)
+
+ROTATION:
+  rotate [days]       Rotate keys (Layer 1, fast ~30s)
+  rotate-instance [days]  Rotate entire instance (Layer 2, ~5min)
+  teardown            Complete destruction (Layer 3)
+
+MONITORING:
+  check-health        Run health check for compromise detection
+  watch-logs          Watch logs in real-time
+  db-stats            Query database statistics
+
+UTILITIES:
+  test                Send test cue to verify end-to-end
+  ssh                 SSH into CueSync instance
+  keygen              Generate new key and hash
+  ip                  Show static IP information
+  help                Show this help message
+
+LOGS:
+  All commands are logged to: $HOOKS_LOG_FILE
+
+EXAMPLES:
+  ./hooks deploy                    # Deploy to Lightsail
+  ./hooks rotate 90                 # Rotate keys, expire in 90 days
+  ./hooks rotate-instance 180       # Fresh instance, expire in 180 days
+  ./hooks health                    # Check server health
+  ./hooks logs 100                  # View last 100 log lines
+  ./hooks test                      # Send test cue
+
+ENVIRONMENT VARIABLES:
+  STATIC_IP           Static IP address (default: $STATIC_IP)
+  INSTANCE_NAME       Lightsail instance name (default: $INSTANCE_NAME)
+  EXPIRES_DAYS        Days until expiration (default: 30)
+
+EOF
 }
 
-print_success() {
-  echo -e "${GREEN}✅${NC} $1"
-}
+# Command implementations
+cmd_deploy() {
+    echo "Deploying CueSync..."
+    log_command "deploy" "started"
 
-print_error() {
-  echo -e "${RED}❌${NC} $1"
-}
+    export SERVER_HOST="$INSTANCE_NAME"
+    export SERVER_USER="ubuntu"
+    export REMOTE_DIR="/home/ubuntu/cuesync"
+    export CUESYNC_PORT="8080"
 
-print_warning() {
-  echo -e "${YELLOW}⚠️${NC}  $1"
-}
-
-# ============================================================
-# VALIDATION
-# ============================================================
-
-validate_local() {
-  print_header "VALIDATING LOCAL CONFIGURATION"
-
-  # Check schedule.yaml exists
-  if [[ ! -f "$SCHEDULE_FILE" ]]; then
-    print_error "Missing schedule.yaml"
-    echo ""
-    echo "This file should contain your cuesheet schedule."
-    exit 1
-  fi
-
-  # Parse schedule.yaml
-  if ! python3 -c "import yaml; yaml.safe_load(open('$SCHEDULE_FILE'))" 2>/dev/null; then
-    print_error "Invalid YAML in schedule.yaml"
-    exit 1
-  fi
-
-  print_success "schedule.yaml is valid"
-
-  # Check deploy-config.yaml for deployment commands
-  if [[ "$1" == "deploy" ]] && [[ ! -f "$DEPLOY_CONFIG" ]]; then
-    print_error "Missing deploy-config.yaml"
-    echo ""
-    echo "Copy deploy-config.example.yaml to deploy-config.yaml"
-    echo "Then fill in your server details."
-    exit 1
-  fi
-
-  if [[ -f "$DEPLOY_CONFIG" ]]; then
-    # Check for placeholder values
-    if grep -q "your-server.example.com" "$DEPLOY_CONFIG" 2>/dev/null; then
-      print_warning "deploy-config.yaml contains placeholder values"
-      print_step "Update with your actual server details"
+    if ./scripts/deploy.sh; then
+        log_command "deploy" "success"
+        echo "✅ Deployment complete"
     else
-      print_success "deploy-config.yaml is configured"
+        log_command "deploy" "failed"
+        echo "❌ Deployment failed"
+        exit 1
     fi
-  fi
 }
 
-# ============================================================
-# DEPLOYMENT
-# ============================================================
+cmd_status() {
+    echo "Checking CueSync status..."
+    log_command "status" "checking"
 
-deploy_to_server() {
-  print_header "DEPLOYING TO SERVER"
-
-  validate_local deploy
-
-  # Extract server config
-  SERVER_HOST=$(awk -F': ' '/^  host:/ {print $2}' "$DEPLOY_CONFIG" | tr -d ' "')
-  SERVER_USER=$(awk -F': ' '/^  user:/ {print $2}' "$DEPLOY_CONFIG" | tr -d ' "')
-  SSH_KEY=$(awk -F': ' '/^  ssh_key:/ {print $2}' "$DEPLOY_CONFIG" | tr -d ' "' | sed "s|~|$HOME|")
-  REMOTE_DIR=$(awk -F': ' '/^  remote_dir:/ {print $2}' "$DEPLOY_CONFIG" | tr -d ' "')
-
-  if [[ -z "$SERVER_HOST" ]] || [[ "$SERVER_HOST" == "your-server.example.com" ]]; then
-    print_error "Server host not configured in deploy-config.yaml"
-    exit 1
-  fi
-
-  print_step "Connecting to $SERVER_USER@$SERVER_HOST"
-  print_step "Remote directory: $REMOTE_DIR"
-  echo ""
-
-  # SSH and run deployment
-  ssh -i "$SSH_KEY" "$SERVER_USER@$SERVER_HOST" << 'EOF'
-    set -e
-
-    # Navigate to cuesync directory
-    cd ~/cuesync || {
-      echo "❌ Cuesync not found. Run setup first."
-      exit 1
-    }
-
-    echo "▶ Pulling latest cuesync config..."
-    git pull origin main
-
-    echo "▶ Pulling latest maestro code..."
-    cd maestro
-    git pull origin main
-    cd ..
-
-    echo "▶ Regenerating cron jobs..."
-    ./sync.sh
-
-    echo "✅ Deployment complete"
-EOF
-
-  print_success "Deployed successfully"
-  echo ""
-  print_step "Server will execute cuesheets on schedule"
-  print_step "Run './hooks info' to see active cron jobs"
-}
-
-# ============================================================
-# SERVER INFO
-# ============================================================
-
-show_server_info() {
-  print_header "SERVER INFORMATION"
-
-  if [[ ! -f "$DEPLOY_CONFIG" ]]; then
-    print_error "Missing deploy-config.yaml"
-    echo "Cannot connect to server without deployment config."
-    exit 1
-  fi
-
-  # Extract server config
-  SERVER_HOST=$(awk -F': ' '/^  host:/ {print $2}' "$DEPLOY_CONFIG" | tr -d ' "')
-  SERVER_USER=$(awk -F': ' '/^  user:/ {print $2}' "$DEPLOY_CONFIG" | tr -d ' "')
-  SSH_KEY=$(awk -F': ' '/^  ssh_key:/ {print $2}' "$DEPLOY_CONFIG" | tr -d ' "' | sed "s|~|$HOME|")
-
-  if [[ -z "$SERVER_HOST" ]] || [[ "$SERVER_HOST" == "your-server.example.com" ]]; then
-    print_error "Server host not configured"
-    exit 1
-  fi
-
-  print_step "Connecting to $SERVER_USER@$SERVER_HOST"
-  echo ""
-
-  ssh -i "$SSH_KEY" "$SERVER_USER@$SERVER_HOST" << 'EOF'
-    echo "🔄 Cuesync Status"
-    echo "============================"
-    echo ""
-
-    cd ~/cuesync || exit 1
-
-    # Last sync time
-    if [ -f "logs/sync.log" ]; then
-      echo "Last Sync:"
-      tail -n 1 logs/sync.log 2>/dev/null || echo "  Never"
+    if ssh "$INSTANCE_NAME" 'sudo systemctl status cuesync --no-pager'; then
+        log_command "status" "running"
     else
-      echo "Last Sync: Never"
+        log_command "status" "not_running"
+        exit 1
     fi
-    echo ""
-
-    # Active cron jobs
-    echo "Active Cron Jobs:"
-    crontab -l 2>/dev/null | grep -v "^#" | grep -v "^$" || echo "  (none)"
-    echo ""
-
-    # Recent logs
-    echo "Recent Log Files:"
-    ls -lt logs/*.log 2>/dev/null | head -n 5 || echo "  (no logs yet)"
-EOF
 }
 
-# ============================================================
-# TEST
-# ============================================================
+cmd_health() {
+    echo "Checking health endpoint..."
+    log_command "health" "checking"
 
-test_server() {
-  print_header "TESTING SERVER"
-
-  if [[ ! -f "$DEPLOY_CONFIG" ]]; then
-    print_error "Missing deploy-config.yaml"
-    exit 1
-  fi
-
-  SERVER_HOST=$(awk -F': ' '/^  host:/ {print $2}' "$DEPLOY_CONFIG" | tr -d ' "')
-  SERVER_USER=$(awk -F': ' '/^  user:/ {print $2}' "$DEPLOY_CONFIG" | tr -d ' "')
-  SSH_KEY=$(awk -F': ' '/^  ssh_key:/ {print $2}' "$DEPLOY_CONFIG" | tr -d ' "' | sed "s|~|$HOME|")
-
-  print_step "Testing connection to $SERVER_USER@$SERVER_HOST"
-
-  if ssh -i "$SSH_KEY" -o ConnectTimeout=5 "$SERVER_USER@$SERVER_HOST" "echo '✅ Connection successful'"; then
-    print_success "Server is reachable"
-  else
-    print_error "Cannot connect to server"
-    exit 1
-  fi
+    if curl -sf "http://$STATIC_IP:8080/health" | python3 -m json.tool; then
+        log_command "health" "healthy"
+    else
+        log_command "health" "unhealthy"
+        echo "❌ Health check failed"
+        exit 1
+    fi
 }
 
-# ============================================================
-# LOCAL STATUS (NO SERVER)
-# ============================================================
+cmd_stats() {
+    echo "Fetching execution statistics..."
+    log_command "stats" "fetching"
 
-show_local_status() {
-  print_header "LOCAL SCHEDULE"
-
-  if [[ ! -f "$SCHEDULE_FILE" ]]; then
-    print_error "Missing schedule.yaml"
-    exit 1
-  fi
-
-  # Parse schedule.yaml for schedule info
-  python3 << 'PYTHON'
-import yaml
-from pathlib import Path
-
-schedule_path = Path('schedule.yaml')
-with open(schedule_path) as f:
-    config = yaml.safe_load(f)
-
-print(f"Sync Interval: {config.get('sync_interval', 'Not set')}")
-print("")
-
-print("Cuesheets:")
-for cue in config.get('cuesheets', []):
-    status = "✅ enabled" if cue.get('enabled', True) else "❌ disabled"
-    desc = cue.get('description', '')
-    print(f"  {cue['name']}")
-    print(f"    Schedule: {cue['schedule']}")
-    print(f"    Status: {status}")
-    if desc:
-        print(f"    Description: {desc}")
-    print("")
-PYTHON
+    curl -s "http://$STATIC_IP:8080/stats" | python3 -m json.tool
+    log_command "stats" "success"
 }
 
-# ============================================================
-# LIST NEXT (SCHEDULED EXECUTIONS)
-# ============================================================
+cmd_logs() {
+    local lines=${1:-50}
+    echo "Fetching last $lines log lines..."
+    log_command "logs" "fetching:$lines"
 
-list_next() {
-  print_header "NEXT SCHEDULED EXECUTIONS"
-
-  if [[ ! -f "$SCHEDULE_FILE" ]]; then
-    print_error "Missing schedule.yaml"
-    exit 1
-  fi
-
-  python3 << 'PYTHON'
-import yaml
-from pathlib import Path
-
-schedule_path = Path('schedule.yaml')
-with open(schedule_path) as f:
-    config = yaml.safe_load(f)
-
-print(f"Sync Interval: {config.get('sync_interval', 'Not set')}")
-print("")
-
-print("Cuesheets:")
-for cue in config.get('cuesheets', []):
-    status = "✅ enabled" if cue.get('enabled', True) else "❌ disabled"
-    desc = cue.get('description', '')
-    print(f"  {cue['name']}")
-    print(f"    Schedule: {cue['schedule']}")
-    print(f"    Status: {status}")
-    if desc:
-        print(f"    Description: {desc}")
-    print("")
-PYTHON
+    ssh "$INSTANCE_NAME" "sudo journalctl -u cuesync -n $lines --no-pager"
+    log_command "logs" "success"
 }
 
-# ============================================================
-# VIEW LOG
-# ============================================================
+cmd_rotate() {
+    local days=${1:-30}
+    echo "Rotating keys (Layer 1)..."
+    log_command "rotate" "started:${days}days"
 
-view_log() {
-  if [ -z "$1" ]; then
-    print_error "Usage: ./hooks view-log <cuesheet-name>"
-    echo ""
-    echo "Available logs:"
-    ls -1 "$LOGS_DIR"/*.log 2>/dev/null | xargs -n1 basename || echo "  (no logs yet)"
-    exit 1
-  fi
-
-  LOG_FILE="$LOGS_DIR/$1.log"
-  if [ ! -f "$LOG_FILE" ]; then
-    print_error "Log not found: $LOG_FILE"
-    exit 1
-  fi
-
-  print_header "LOG: $1.log"
-  tail -n 50 "$LOG_FILE"
+    export EXPIRES_DAYS=$days
+    if ./scripts/rotate.sh; then
+        log_command "rotate" "success:${days}days"
+        echo "✅ Key rotation complete"
+    else
+        log_command "rotate" "failed"
+        echo "❌ Rotation failed"
+        exit 1
+    fi
 }
 
-# ============================================================
-# ARCHIVE LOGS
-# ============================================================
+cmd_rotate_instance() {
+    local days=${1:-30}
+    echo "Rotating instance (Layer 2)..."
+    log_command "rotate-instance" "started:${days}days"
 
-archive_logs() {
-  print_header "ARCHIVING OLD LOGS"
-
-  mkdir -p "$ARCHIVE_DIR"
-
-  ARCHIVE_DATE=$(date +%Y%m%d-%H%M%S)
-  ARCHIVE_FILE="$ARCHIVE_DIR/logs-$ARCHIVE_DATE.tar.gz"
-
-  OLD_LOGS=$(find "$LOGS_DIR" -name "*.log" -type f -mtime +7 2>/dev/null || true)
-
-  if [ -z "$OLD_LOGS" ]; then
-    print_success "No logs older than 7 days to archive"
-    exit 0
-  fi
-
-  echo "$OLD_LOGS" | tar -czf "$ARCHIVE_FILE" -T -
-  echo "$OLD_LOGS" | xargs rm -f
-
-  print_success "Archived to: logs/archive/logs-$ARCHIVE_DATE.tar.gz"
-  echo ""
-  echo "Archived logs:"
-  echo "$OLD_LOGS" | sed 's/^/  /'
+    export EXPIRES_DAYS=$days
+    if ./scripts/rotate-instance.sh; then
+        log_command "rotate-instance" "success:${days}days"
+        echo "✅ Instance rotation complete"
+    else
+        log_command "rotate-instance" "failed"
+        echo "❌ Instance rotation failed"
+        exit 1
+    fi
 }
 
-# ============================================================
-# DESTROY
-# ============================================================
+cmd_teardown() {
+    echo "Complete teardown (Layer 3)..."
+    log_command "teardown" "started"
 
-destroy_deployment() {
-  print_header "DESTROYING DEPLOYMENT"
-
-  if [[ ! -f "$DEPLOY_CONFIG" ]]; then
-    print_error "Missing deploy-config.yaml"
-    exit 1
-  fi
-
-  SERVER_HOST=$(awk -F': ' '/^  host:/ {print $2}' "$DEPLOY_CONFIG" | tr -d ' "')
-  SERVER_USER=$(awk -F': ' '/^  user:/ {print $2}' "$DEPLOY_CONFIG" | tr -d ' "')
-  SSH_KEY=$(awk -F': ' '/^  ssh_key:/ {print $2}' "$DEPLOY_CONFIG" | tr -d ' "' | sed "s|~|$HOME|")
-
-  print_warning "This will remove all cron jobs from $SERVER_HOST"
-  read -p "Are you sure? [y/N]: " -n 1 -r
-  echo ""
-
-  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    print_step "Cancelled"
-    exit 0
-  fi
-
-  ssh -i "$SSH_KEY" "$SERVER_USER@$SERVER_HOST" << 'EOF'
-    echo "▶ Removing cron jobs..."
-    crontab -r 2>/dev/null || echo "No crontab to remove"
-    echo "✅ Cron jobs removed"
-EOF
-
-  print_success "Deployment destroyed"
-  print_warning "Server files remain. Manually delete ~/cuesync if needed."
+    if ./scripts/teardown.sh; then
+        log_command "teardown" "success"
+        echo "✅ Teardown complete"
+    else
+        log_command "teardown" "failed"
+        echo "❌ Teardown failed"
+        exit 1
+    fi
 }
 
-# ============================================================
-# COMMAND DISPATCHER
-# ============================================================
+cmd_check_health() {
+    echo "Running health check..."
+    log_command "check-health" "started"
 
-show_usage() {
-  cat <<EOF
-🔄 Cuesync Deployment Hooks
-
-Usage:
-  ./hooks <command> [args]
-
-Deployment Commands:
-  validate      Validate schedule and deployment config
-  deploy        Deploy to server (pull latest, regenerate cron)
-  info          Show server status and active cron jobs
-  test          Test server connection
-  destroy       Remove cron jobs from server
-
-Schedule Commands:
-  list-next     Show next scheduled executions
-  status        Show local schedule configuration
-
-Log Commands:
-  view-log <name>   View recent log for a cuesheet
-  archive-logs      Archive logs older than 7 days
-
-Examples:
-  ./hooks validate
-  ./hooks deploy
-  ./hooks info
-  ./hooks list-next
-  ./hooks view-log morning-workflow
-
-EOF
+    if ./scripts/check-health.sh; then
+        log_command "check-health" "success"
+    else
+        log_command "check-health" "warnings"
+    fi
 }
 
-# Parse command
-COMMAND=${1:-help}
+cmd_watch_logs() {
+    echo "Watching logs in real-time (Ctrl+C to exit)..."
+    log_command "watch-logs" "started"
 
-case "$COMMAND" in
-  validate)
-    validate_local
-    ;;
-  deploy)
-    deploy_to_server
-    ;;
-  info)
-    show_server_info
-    ;;
-  test)
-    test_server
-    ;;
-  destroy)
-    destroy_deployment
-    ;;
-  list-next)
-    list_next
-    ;;
-  status)
-    show_local_status
-    ;;
-  view-log)
-    view_log "$2"
-    ;;
-  archive-logs)
-    archive_logs
-    ;;
-  help|--help|-h|"")
-    show_usage
-    ;;
-  *)
-    print_error "Unknown command: $COMMAND"
-    echo ""
-    show_usage
-    exit 1
-    ;;
-esac
+    ssh "$INSTANCE_NAME" 'sudo journalctl -u cuesync -f'
+}
+
+cmd_db_stats() {
+    echo "Querying database statistics..."
+    log_command "db-stats" "started"
+
+    ssh "$INSTANCE_NAME" "cd /home/ubuntu/cuesync && sqlite3 cuesync.db 'SELECT status, COUNT(*) FROM cues GROUP BY status'"
+    log_command "db-stats" "success"
+}
+
+cmd_test() {
+    echo "Sending test cue..."
+    log_command "test" "started"
+
+    # Check if dispatcher exists in maestro
+    if [ -d "../maestro/.cue-dispatcher" ]; then
+        cd ../maestro
+        if .cue-dispatcher/dispatch.sh .cue-dispatcher/examples/test.json; then
+            cd - > /dev/null
+            log_command "test" "success"
+            echo "✅ Test cue dispatched successfully"
+            echo "Wait 60 seconds for worker to execute..."
+        else
+            cd - > /dev/null
+            log_command "test" "failed"
+            echo "❌ Test failed"
+            exit 1
+        fi
+    else
+        log_command "test" "no_dispatcher"
+        echo "❌ Dispatcher not found at ../maestro/.cue-dispatcher"
+        exit 1
+    fi
+}
+
+cmd_ssh() {
+    echo "Connecting to CueSync instance..."
+    log_command "ssh" "started"
+
+    ssh "$INSTANCE_NAME"
+    log_command "ssh" "closed"
+}
+
+cmd_keygen() {
+    echo "Generating new key and hash..."
+    log_command "keygen" "started"
+
+    local key=$(openssl rand -hex 32)
+    local hash=$(echo -n "$key" | openssl dgst -sha256 | awk '{print $2}')
+
+    echo
+    echo "Upstream Key: $key"
+    echo "SHA-256 Hash: $hash"
+    echo
+    echo "Add to config.yaml:"
+    echo "  upstream_key_hash: \"$hash\""
+    echo
+
+    log_command "keygen" "success"
+}
+
+cmd_ip() {
+    echo "Fetching static IP information..."
+    log_command "ip" "fetching"
+
+    aws lightsail get-static-ip --static-ip-name cuesync-static-ip | python3 -m json.tool
+    log_command "ip" "success"
+}
+
+cmd_show_logs() {
+    echo "=== CueSync Hooks Log ==="
+    echo
+    if [ -f "$HOOKS_LOG_FILE" ]; then
+        tail -n 50 "$HOOKS_LOG_FILE"
+        echo
+        echo "Full log: $HOOKS_LOG_FILE"
+    else
+        echo "No log file found yet."
+    fi
+}
+
+# Main command router
+main() {
+    local command=${1:-help}
+
+    case "$command" in
+        deploy)
+            cmd_deploy
+            ;;
+        status)
+            cmd_status
+            ;;
+        health)
+            cmd_health
+            ;;
+        stats)
+            cmd_stats
+            ;;
+        logs)
+            cmd_logs "$2"
+            ;;
+        rotate)
+            cmd_rotate "$2"
+            ;;
+        rotate-instance)
+            cmd_rotate_instance "$2"
+            ;;
+        teardown)
+            cmd_teardown
+            ;;
+        check-health)
+            cmd_check_health
+            ;;
+        watch-logs)
+            cmd_watch_logs
+            ;;
+        db-stats)
+            cmd_db_stats
+            ;;
+        test)
+            cmd_test
+            ;;
+        ssh)
+            cmd_ssh
+            ;;
+        keygen)
+            cmd_keygen
+            ;;
+        ip)
+            cmd_ip
+            ;;
+        show-logs)
+            cmd_show_logs
+            ;;
+        help|--help|-h)
+            usage
+            ;;
+        *)
+            echo "Unknown command: $command"
+            echo
+            usage
+            exit 1
+            ;;
+    esac
+}
+
+# Run main with all arguments
+main "$@"

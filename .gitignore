@@ -1,13 +1,47 @@
-# Secrets and deployment config
-.env
-deploy-config.yaml
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
 
 # Logs
 logs/
+*.log
 
-# Maestro submodule artifacts (tracked in maestro repo)
-maestro/artifacts/
-maestro/logs/
-maestro/.venv/
-maestro/__pycache__/
-maestro/**/__pycache__/
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Configuration with secrets (never commit)
+config.yaml
+# But DO commit the example:
+!config.yaml.example
+
+# Rotation secrets (never commit)
+.rotation-info
+config.yaml.backup.*
+
+# Archive (non-essential files)
+archive/
+
+# Logs
+logs/
+*.log
