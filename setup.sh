@@ -60,7 +60,7 @@ echo "✅ Logs directory created"
 echo ""
 
 # Generate initial cron jobs
-echo "6️⃣  Generating cron jobs from config.yaml..."
+echo "6️⃣  Generating cron jobs from schedule.yaml..."
 ./sync.sh
 echo ""
 

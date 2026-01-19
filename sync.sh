@@ -22,9 +22,9 @@ import subprocess
 import os
 from pathlib import Path
 
-# Load config
-config_path = Path(__file__).parent / 'config.yaml'
-with open(config_path) as f:
+# Load schedule
+schedule_path = Path(__file__).parent / 'schedule.yaml'
+with open(schedule_path) as f:
     config = yaml.safe_load(f)
 
 # Get absolute paths

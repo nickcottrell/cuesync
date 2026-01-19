@@ -19,14 +19,16 @@ A minimal deployment wrapper for [Maestro](https://github.com/nickcottrell/maest
 
 ```
 cuesync/
-├── config.yaml        # Schedule configuration (EDIT THIS)
-├── hooks              # Simple management commands
-├── setup.sh           # One-time server setup
-├── sync.sh            # Auto-pull and update cron
-├── .env.example       # Secrets template
-├── logs/              # Execution logs
-│   └── archive/       # Archived logs (7+ days)
-└── maestro/           # Git submodule → dev repo
+├── schedule.yaml              # Schedule configuration (EDIT THIS, committed)
+├── deploy-config.yaml         # Server settings (gitignored)
+├── deploy-config.example.yaml # Template for server config
+├── hooks                      # Deployment commands
+├── setup.sh                   # One-time server setup
+├── sync.sh                    # Auto-pull and update cron
+├── .env.example               # Secrets template
+├── logs/                      # Execution logs
+│   └── archive/               # Archived logs (7+ days)
+└── maestro/                   # Git submodule → dev repo
     └── (pulled automatically)
 ```
 
@@ -62,18 +64,30 @@ Fill in:
 - Zapier webhook URLs
 - Preferences
 
-### 3. Done
+### 3. Configure Deployment (Optional)
+
+If you want to use `./hooks deploy` from your local machine:
+
+```bash
+cp deploy-config.example.yaml deploy-config.yaml
+nano deploy-config.yaml
+# Fill in server host, SSH key, etc.
+```
+
+### 4. Done
 
 Server is now:
-- ✅ Auto-syncing maestro code every 30 minutes (adjustable in config.yaml)
-- ✅ Running cuesheets on schedule (from `config.yaml`)
+- ✅ Auto-syncing maestro code every 30 minutes (adjustable in schedule.yaml)
+- ✅ Running cuesheets on schedule (from `schedule.yaml`)
 - ✅ Logging to `logs/`
 
 ---
 
 ## Change Schedule
 
-Edit `config.yaml`:
+### Method 1: Edit and push (automatic)
+
+Edit `schedule.yaml`:
 
 ```yaml
 cuesheets:
@@ -85,12 +99,25 @@ cuesheets:
 Commit and push:
 
 ```bash
-git add config.yaml
+git add schedule.yaml
 git commit -m "Change morning-workflow to 8am"
 git push
 ```
 
-**Server auto-pulls and regenerates cron within 30 minutes** (adjustable in config.yaml).
+**Server auto-pulls and regenerates cron within 30 minutes** (or next sync interval).
+
+### Method 2: Deploy immediately
+
+```bash
+# Make changes to schedule.yaml
+git commit -am "Change morning-workflow to 8am"
+git push
+
+# Deploy immediately (requires deploy-config.yaml)
+./hooks deploy
+```
+
+Server updates within seconds instead of waiting for auto-sync.
 
 ---
 
@@ -105,11 +132,52 @@ cd ~/repos/maestro
 git push
 ```
 
-**Server auto-pulls within 30 minutes** (adjustable in config.yaml).
+**Server auto-pulls within 30 minutes** (adjustable in schedule.yaml).
 
 ---
 
-## Manual Operations
+## Deployment Commands
+
+### From Local Machine
+
+```bash
+# Validate config before deploying
+./hooks validate
+
+# Deploy to server (pull latest, regenerate cron)
+./hooks deploy
+
+# Check server status
+./hooks info
+
+# Test server connection
+./hooks test
+
+# Remove cron jobs from server
+./hooks destroy
+```
+
+### Schedule Management
+
+```bash
+# Show next scheduled executions
+./hooks list-next
+
+# Show local schedule config
+./hooks status
+```
+
+### Log Management
+
+```bash
+# View recent log for a cuesheet
+./hooks view-log morning-workflow
+
+# Archive old logs (7+ days)
+./hooks archive-logs
+```
+
+### Manual Server Operations (SSH)
 
 ```bash
 # SSH to server
@@ -118,18 +186,6 @@ cd cuesync
 
 # Force sync now
 ./sync.sh
-
-# Check what's scheduled next
-./hooks list-next
-
-# View recent log for a cuesheet
-./hooks view-log morning-workflow
-
-# Archive old logs (7+ days)
-./hooks archive-logs
-
-# Check overall status
-./hooks status
 
 # Check cron jobs
 crontab -l
@@ -143,15 +199,26 @@ cd maestro
 
 ## Files
 
-### `config.yaml` - The Schedule
+### `schedule.yaml` - The Schedule (Committed)
 
-Flat file that controls everything:
+Flat file that controls what runs and when:
 
 - Sync interval (how often to pull updates)
 - Cuesheet schedules (what runs when)
 - Enable/disable cuesheets
 
-**Edit this file to change timing.**
+**Edit this file to change timing. Committed to git, shared across team.**
+
+### `deploy-config.yaml` - Server Settings (Gitignored)
+
+Deployment configuration:
+
+- Server host and SSH credentials
+- Remote directory paths
+- Git repository URLs
+- Notification settings
+
+**Gitignored. Never commit. Copy from deploy-config.example.yaml.**
 
 ### `setup.sh` - One-Time Setup
 
@@ -165,24 +232,35 @@ Run once on fresh server:
 
 ### `sync.sh` - Auto-Pull Script
 
-Runs every 30 minutes (via cron, adjustable in config.yaml):
+Runs every 30 minutes (via cron, adjustable in schedule.yaml):
 
 - Pulls latest cuesync config
 - Pulls latest maestro code
-- Regenerates cron from `config.yaml`
+- Regenerates cron from `schedule.yaml`
 
 **You rarely need to run this manually.**
 
-### `hooks` - Management Commands
+### `hooks` - Deployment Commands
 
-Simple commands for deployment node:
+Deployment commands (like demo-magic-fridge pattern):
+
+- `./hooks validate` - Validate config before deploy
+- `./hooks deploy` - Deploy to server (SSH, pull, regenerate cron)
+- `./hooks info` - Show server status
+- `./hooks test` - Test server connection
+- `./hooks destroy` - Remove cron jobs
+
+Schedule commands:
 
 - `./hooks list-next` - Show next scheduled executions
-- `./hooks view-log <name>` - View recent log for a cuesheet
-- `./hooks archive-logs` - Archive logs older than 7 days
-- `./hooks status` - Show overall deployment status
+- `./hooks status` - Show local schedule config
 
-**Dumb and simple. No magic.**
+Log commands:
+
+- `./hooks view-log <name>` - View recent log
+- `./hooks archive-logs` - Archive old logs
+
+**Follows demo-magic-fridge hooks pattern, but simplified for cron deployment.**
 
 ### `.env` - Secrets
 
@@ -240,13 +318,14 @@ tail -f logs/morning-workflow.log  # Live tail
 
 ## Why This is Minimal
 
-- **4 core files** (config.yaml, hooks, setup.sh, sync.sh)
+- **5 core files** (schedule.yaml, deploy-config.yaml, hooks, setup.sh, sync.sh)
 - **1 server** ($5/month)
 - **Flat file schedule** (no complex config)
 - **Git pull** (no deployment pipeline)
 - **Cron** (no Lambda, no EventBridge)
-- **Simple hooks** (4 commands, no magic)
+- **Simple hooks** (deploy pattern from demo-magic-fridge, but simpler)
 - **Dumb logging** (append to files, archive when old)
+- **SSH deploy** (no SAM, no CloudFormation)
 
 ---
 
@@ -265,10 +344,15 @@ git push
 ### Schedule Changes (Cuesync Repo)
 
 ```bash
-# Edit timing
-nano config.yaml
+# Method 1: Automatic (wait for sync)
+nano schedule.yaml
 git push
 # Server regenerates cron within 30 min (or next sync interval)
+
+# Method 2: Immediate deployment
+nano schedule.yaml
+git push
+./hooks deploy  # Deploys immediately via SSH
 ```
 
 ### Deployment (Server)
