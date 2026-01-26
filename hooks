@@ -50,6 +50,7 @@ MONITORING:
 
 UTILITIES:
   test                Send test cue to verify end-to-end
+  verify-key          Verify dispatcher key matches server
   ssh                 SSH into CueSync instance
   keygen              Generate new key and hash
   ip                  Show static IP information
@@ -245,22 +246,41 @@ cmd_test() {
     log_command "test" "started"
 
     # Check if dispatcher exists in maestro
-    if [ -d "../maestro/.cue-dispatcher" ]; then
+    if [ -d "../maestro/cue-dispatcher" ]; then
         cd ../maestro
-        if .cue-dispatcher/dispatch.sh .cue-dispatcher/examples/test.json; then
-            cd - > /dev/null
-            log_command "test" "success"
-            echo "✅ Test cue dispatched successfully"
-            echo "Wait 60 seconds for worker to execute..."
+        if [ -f "cues/test-email-me.json" ]; then
+            if ./cue-dispatcher/dispatch.sh cues/test-email-me.json; then
+                cd - > /dev/null
+                log_command "test" "success"
+                echo "✅ Test cue dispatched successfully"
+                echo "Wait 60 seconds for worker to execute..."
+            else
+                cd - > /dev/null
+                log_command "test" "failed"
+                echo "❌ Test failed"
+                exit 1
+            fi
         else
             cd - > /dev/null
-            log_command "test" "failed"
-            echo "❌ Test failed"
+            log_command "test" "no_test_cue"
+            echo "❌ Test cue not found at ../maestro/cues/test-email-me.json"
             exit 1
         fi
     else
         log_command "test" "no_dispatcher"
-        echo "❌ Dispatcher not found at ../maestro/.cue-dispatcher"
+        echo "❌ Dispatcher not found at ../maestro/cue-dispatcher"
+        exit 1
+    fi
+}
+
+cmd_verify_key() {
+    echo "Verifying dispatcher key..."
+    log_command "verify-key" "started"
+
+    if ./scripts/verify-key.sh; then
+        log_command "verify-key" "success"
+    else
+        log_command "verify-key" "failed"
         exit 1
     fi
 }
@@ -360,6 +380,9 @@ main() {
             ;;
         test)
             cmd_test
+            ;;
+        verify-key)
+            cmd_verify_key
             ;;
         ssh)
             cmd_ssh
