@@ -19,7 +19,7 @@ import threading
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Dict, List, Optional
 import yaml
 
@@ -427,7 +427,7 @@ class CueSyncRelay:
         CueSyncRequestHandler.store = self.store
         CueSyncRequestHandler.validator = self.validator
 
-        server = HTTPServer((host, port), CueSyncRequestHandler)
+        server = ThreadingHTTPServer((host, port), CueSyncRequestHandler)
         print(f"[{datetime.now(timezone.utc).isoformat()}] CueSync relay started")
         print(f"  ID: {self.config.cuesync_id}")
         print(f"  Listening: {host}:{port}")
