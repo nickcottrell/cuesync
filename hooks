@@ -42,7 +42,9 @@ ROTATION:
 
 MONITORING:
   check-health        Run health check for compromise detection
-  monitor             Run automated health monitor (alerts on failure)
+  monitor             Run automated health monitor (queues alerts)
+  summary [days]      Show monitoring summary (default: 1 day)
+  review-alerts       Review and dispatch queued alerts
   watch-logs          Watch logs in real-time
   db-stats            Query database statistics
 
@@ -203,6 +205,26 @@ cmd_monitor() {
     fi
 }
 
+cmd_summary() {
+    local days=${1:-1}
+    echo "Generating monitoring summary..."
+    log_command "summary" "days=$days"
+
+    ./scripts/summarize-logs.sh "$days"
+}
+
+cmd_review_alerts() {
+    echo "Reviewing queued alerts..."
+    log_command "review-alerts" "started"
+
+    if ./scripts/review-alerts.sh; then
+        log_command "review-alerts" "completed"
+    else
+        log_command "review-alerts" "cancelled"
+        exit 1
+    fi
+}
+
 cmd_watch_logs() {
     echo "Watching logs in real-time (Ctrl+C to exit)..."
     log_command "watch-logs" "started"
@@ -323,6 +345,12 @@ main() {
             ;;
         monitor)
             cmd_monitor
+            ;;
+        summary)
+            cmd_summary "$2"
+            ;;
+        review-alerts)
+            cmd_review_alerts
             ;;
         watch-logs)
             cmd_watch_logs

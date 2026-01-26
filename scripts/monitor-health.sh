@@ -7,41 +7,31 @@ set -e
 CUESYNC_URL="${CUESYNC_URL:-http://3.138.41.20:8080}"
 ALERT_THRESHOLD="${ALERT_THRESHOLD:-3}"  # fail this many times before alerting
 STATE_FILE="/tmp/cuesync-health-state"
-LOG_FILE="${LOG_FILE:-/tmp/cuesync-health.log}"
+LOG_FILE="${LOG_FILE:-/Users/nickcottrell/Repositories/maestro/logs/cuesync-monitor.log}"
+ALERT_QUEUE="/tmp/cuesync-pending-alerts.log"
 
 log() {
     echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] $*" | tee -a "$LOG_FILE"
 }
 
-send_alert() {
+queue_alert() {
     local reason="$1"
     local details="$2"
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-    log "🚨 ALERT: $reason"
+    log "🚨 ALERT QUEUED: $reason"
     log "Details: $details"
 
-    # Send alert via maestro dispatcher (email-me tool)
-    if [ -f "/Users/nickcottrell/Repositories/maestro/cue-dispatcher/dispatch.sh" ]; then
-        local alert_cue=$(mktemp)
-        cat > "$alert_cue" <<EOF
-{
-  "cue_id": "cuesync-alert-$(date +%s)",
-  "tool": "email-me",
-  "payload": {
-    "intent_type": "alert",
-    "subject": "🚨 CueSync Health Alert: $reason",
-    "body": "CueSync monitoring detected a failure:\n\nReason: $reason\n\nDetails:\n$details\n\nTimestamp: $(date)\nCueSync URL: $CUESYNC_URL\n\nAction required: Check CueSync server status",
-    "priority": "high"
-  }
-}
-EOF
+    # Queue alert for manual review and dispatch
+    cat >> "$ALERT_QUEUE" <<EOF
+---
+TIMESTAMP: $timestamp
+REASON: $reason
+DETAILS: $details
+CUESYNC_URL: $CUESYNC_URL
+---
 
-        cd /Users/nickcottrell/Repositories/maestro
-        ./cue-dispatcher/dispatch.sh "$alert_cue" 2>&1 | tee -a "$LOG_FILE"
-        rm "$alert_cue"
-    else
-        log "❌ Could not send alert - dispatcher not found"
-    fi
+EOF
 }
 
 # Initialize state file if it doesn't exist
@@ -59,9 +49,9 @@ if ! HEALTH_RESPONSE=$(curl -sf -m 5 "$CUESYNC_URL/health" 2>&1); then
     echo "$FAIL_COUNT" > "$STATE_FILE"
 
     if [ "$FAIL_COUNT" -ge "$ALERT_THRESHOLD" ]; then
-        send_alert "Health endpoint unreachable" "Failed $FAIL_COUNT consecutive health checks.\n\nLast error: $HEALTH_RESPONSE"
+        queue_alert "Health endpoint unreachable" "Failed $FAIL_COUNT consecutive health checks.\n\nLast error: $HEALTH_RESPONSE"
     else
-        log "⚠️  Failure count: $FAIL_COUNT/$ALERT_THRESHOLD (will alert if continues)"
+        log "⚠️  Failure count: $FAIL_COUNT/$ALERT_THRESHOLD (will queue alert if continues)"
     fi
     exit 1
 fi
@@ -74,7 +64,7 @@ if [ "$STATUS" != "ready" ]; then
     echo "$FAIL_COUNT" > "$STATE_FILE"
 
     if [ "$FAIL_COUNT" -ge "$ALERT_THRESHOLD" ]; then
-        send_alert "CueSync status not ready" "Status: $STATUS\n\nFull response:\n$HEALTH_RESPONSE"
+        queue_alert "CueSync status not ready" "Status: $STATUS\n\nFull response:\n$HEALTH_RESPONSE"
     fi
     exit 1
 fi
@@ -96,7 +86,7 @@ if [ "$DURATION" -gt 5000 ]; then
     echo "$FAIL_COUNT" > "$STATE_FILE"
 
     if [ "$FAIL_COUNT" -ge "$ALERT_THRESHOLD" ]; then
-        send_alert "CueSync performance degraded" "3 concurrent requests took ${DURATION}ms (should be <5000ms).\n\nThis suggests the server may be blocking or overloaded."
+        queue_alert "CueSync performance degraded" "3 concurrent requests took ${DURATION}ms (should be <5000ms).\n\nThis suggests the server may be blocking or overloaded."
     fi
     exit 1
 fi
@@ -119,14 +109,14 @@ except Exception as e:
 
     if [ "$DAYS_REMAINING" -lt 7 ] && [ "$DAYS_REMAINING" -ge 0 ]; then
         log "⚠️  CueSync expires in $DAYS_REMAINING days"
-        send_alert "CueSync expiring soon" "CueSync will expire in $DAYS_REMAINING days.\n\nExpires at: $EXPIRES_AT\n\nAction: Rotate keys or destroy instance if no longer needed."
+        queue_alert "CueSync expiring soon" "CueSync will expire in $DAYS_REMAINING days.\n\nExpires at: $EXPIRES_AT\n\nAction: Rotate keys or destroy instance if no longer needed."
     fi
 fi
 
 # All tests passed - reset fail count
 if [ "$FAIL_COUNT" -gt 0 ]; then
     log "✅ Recovery: Health checks now passing after $FAIL_COUNT failures"
-    send_alert "CueSync recovered" "CueSync is now healthy after $FAIL_COUNT failed checks.\n\nStatus: $STATUS\nConcurrent request duration: ${DURATION}ms"
+    queue_alert "CueSync recovered" "CueSync is now healthy after $FAIL_COUNT failed checks.\n\nStatus: $STATUS\nConcurrent request duration: ${DURATION}ms"
 fi
 
 echo "0" > "$STATE_FILE"
