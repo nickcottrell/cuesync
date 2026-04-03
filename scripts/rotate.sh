@@ -42,6 +42,15 @@ fi
 
 # 5. Update config.yaml
 echo "[5/7] Updating config.yaml..."
+
+# Preserve tools block and worker interval from existing config
+TOOLS_BLOCK=$(sed -n '/^tools:/,/^[^ ]/{/^tools:/d; /^[^ ]/d; /^$/d; p;}' config.yaml)
+if [ -z "$TOOLS_BLOCK" ]; then
+  TOOLS_BLOCK="  tool1: https://httpbin.org/post"
+fi
+WORKER_INTERVAL=$(grep "^worker_interval_seconds:" config.yaml | awk '{print $2}')
+WORKER_INTERVAL=${WORKER_INTERVAL:-60}
+
 cat > config.yaml.tmp <<EOF
 # CueSync Configuration - Rotated $(date -u +"%Y-%m-%d %H:%M:%S UTC")
 # This relay is disposable. If compromised, destroy and recreate.
@@ -55,13 +64,13 @@ auth:
 
 # Tool Mapping (webhook URLs are secret)
 tools:
-$(grep -A 100 "^tools:" config.yaml | grep -v "^tools:" | head -n -1 || echo "  tool1: https://httpbin.org/post")
+${TOOLS_BLOCK}
 
 # Storage
 db_path: "cuesync.db"
 
 # Execution
-worker_interval_seconds: 10
+worker_interval_seconds: ${WORKER_INTERVAL}
 max_retry_attempts: 3
 
 # Optional
