@@ -1,0 +1,50 @@
+# Job Alert Agent Configuration
+
+# Agent Settings
+agent:
+  name: "job-alert-agent"
+  version: "1.0.0"
+  port: 5001
+
+# CueSync / Dispatcher
+cuesync:
+  dispatcher_url: "http://localhost:8080/dispatch"
+  # upstream_key: "set-via-UPSTREAM_KEY-env-var"
+
+# Opportunity Scoring
+scoring:
+  min_score: 7  # Only generate proposals for scores >= 7
+  min_budget: 50  # Minimum job budget to consider
+
+# Your Skills (for matching)
+skills:
+  - react
+  - javascript
+  - typescript
+  - python
+  - node
+  - api
+  - debugging
+  - css
+  - html
+
+# Platform-specific settings
+platforms:
+  upwork:
+    enabled: true
+    min_budget: 50
+
+  indeed:
+    enabled: true
+    min_budget: 60000  # Annual salary
+
+  linkedin:
+    enabled: true
+    min_budget: 70000  # Annual salary
+
+# Optional: Gmail API (if not using Zapier)
+gmail:
+  enabled: false
+  # credentials_path: "./credentials.json"
+  label: "job-alert"
+  check_interval_seconds: 300  # 5 minutes

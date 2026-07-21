@@ -38,6 +38,7 @@ class CueSyncConfig:
         )
         self.upstream_key_hash: str = config["auth"]["upstream_key_hash"]
         self.tools: Dict[str, str] = config.get("tools", {})
+        self.push_channels: Dict[str, str] = config.get("push_channels", {})
 
         # Optional fields
         self.db_path: str = config.get("db_path", "cuesync.db")
@@ -252,6 +253,7 @@ class CueSyncRequestHandler(BaseHTTPRequestHandler):
     config: CueSyncConfig = None
     store: CueStore = None
     validator: SignatureValidator = None
+    drops: Dict = {}  # {source: {body, received_at, content_type}}
 
     def log_message(self, format, *args):
         """Override to add timestamps"""
@@ -280,6 +282,7 @@ class CueSyncRequestHandler(BaseHTTPRequestHandler):
                     "expires_at": self.config.expires_at.isoformat(),
                     "can_renew": self.config.can_renew(),
                     "tools": list(self.config.tools.keys()),
+                    "push_channels": [k for k, v in self.config.push_channels.items() if v],
                     "stats": stats,
                 }).encode())
 
@@ -290,12 +293,167 @@ class CueSyncRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(stats).encode())
 
+        elif self.path.startswith("/drop/"):
+            source = self.path.split("/drop/", 1)[1].strip("/")
+            if not source:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Missing source"}).encode())
+                return
+
+            drop = self.drops.get(source)
+            if not drop:
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "error": "No drop",
+                    "source": source,
+                }).encode())
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "source": source,
+                "received_at": drop["received_at"],
+                "content_type": drop["content_type"],
+                "data": drop["body"],
+            }).encode())
+
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_DELETE(self):
+        """Clear drop slots"""
+        if self.path.startswith("/drop/"):
+            source = self.path.split("/drop/", 1)[1].strip("/")
+            if not source:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Missing source"}).encode())
+                return
+
+            removed = self.drops.pop(source, None)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "status": "cleared" if removed else "already_empty",
+                "source": source,
+            }).encode())
         else:
             self.send_response(404)
             self.end_headers()
 
     def do_POST(self):
-        """Accept CUE payloads"""
+        """Accept CUE payloads and drops"""
+        # Drop endpoint -- no auth, no expiry check
+        if self.path.startswith("/drop/"):
+            source = self.path.split("/drop/", 1)[1].strip("/")
+            if not source:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Missing source"}).encode())
+                return
+
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length).decode("utf-8", errors="replace")
+            content_type = self.headers.get("Content-Type", "text/plain")
+
+            # Try to parse as JSON for cleaner storage
+            try:
+                parsed = json.loads(body)
+                stored_body = parsed
+            except (json.JSONDecodeError, ValueError):
+                stored_body = body
+
+            self.drops[source] = {
+                "body": stored_body,
+                "received_at": datetime.now(timezone.utc).isoformat(),
+                "content_type": content_type,
+            }
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "status": "stored",
+                "source": source,
+            }).encode())
+            return
+
+        # Push endpoint -- forwards payload to outbound webhook
+        if self.path.startswith("/push/"):
+            channel = self.path.split("/push/", 1)[1].strip("/")
+            if not channel:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Missing channel"}).encode())
+                return
+
+            webhook_url = self.config.push_channels.get(channel, "")
+            if not webhook_url:
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "error": "Channel not configured",
+                    "channel": channel,
+                }).encode())
+                return
+
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+
+            # Forward to outbound webhook
+            import urllib.request
+            import urllib.error
+
+            try:
+                req = urllib.request.Request(
+                    webhook_url,
+                    data=body,
+                    headers={
+                        "Content-Type": self.headers.get("Content-Type", "application/json"),
+                        "X-CueSync-Push": channel,
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({
+                        "status": "pushed",
+                        "channel": channel,
+                        "upstream_status": resp.status,
+                    }).encode())
+            except urllib.error.HTTPError as e:
+                self.send_response(502)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "error": "Upstream error",
+                    "channel": channel,
+                    "upstream_status": e.code,
+                }).encode())
+            except Exception as e:
+                self.send_response(502)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "error": "Push failed",
+                    "channel": channel,
+                    "detail": str(e),
+                }).encode())
+            return
+
         if self.config.is_expired():
             self.send_response(410)  # Gone
             self.send_header("Content-Type", "application/json")
