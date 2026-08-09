@@ -1,0 +1,8 @@
+name:        cuesync
+kind:        service
+bucket:      disposable-relay
+path:        .
+summary:     inbound relay -- signed cue intake + webhook dispatch
+verbs:
+  security: .node-checks/run.sh
+# entrypoint/endpoints: TODO -- fill when wiring the test/status/deploy verbs
